@@ -1,0 +1,13 @@
+cd C:\Users\David-PC\ESP32_anchore
+idf.py --version
+idf.py set-target esp32
+
+       :: Serial flasher config → Default serial port → COM21
+idf.py build
+idf.py flash monitor     :: portot nem kell megadni, ha beállított
+
+idf.py -p COM22 -b 115200 flash monitor
+
+idf.py -p COM22 -b 115200 flash
+
+idf.py -p COM22 monitor
