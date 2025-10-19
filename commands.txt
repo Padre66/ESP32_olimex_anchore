@@ -11,3 +11,5 @@ idf.py -p COM22 -b 115200 flash monitor
 idf.py -p COM22 -b 115200 flash
 
 idf.py -p COM22 monitor
+
+idf.py -p COM3 -b 115200 flash
