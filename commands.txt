@@ -1,15 +1,29 @@
-cd C:\Users\David-PC\ESP32_anchore
-idf.py --version
-idf.py set-target esp32
+diff --git a/commands.txt b/commands.txt
+index bee439e0a95c5fe6ccdc5905bd0472c86f819414..ce73f427218bfa8d0785e64144ca17d6198c221f 100644
+--- a/commands.txt
++++ b/commands.txt
+@@ -1,15 +1,21 @@
+ cd C:\Users\David-PC\ESP32_anchore
+ idf.py --version
+ idf.py set-target esp32
+ 
+        :: Serial flasher config → Default serial port → COM21
+ idf.py build
+ idf.py flash monitor     :: portot nem kell megadni, ha beállított
+ 
+ idf.py -p COM22 -b 115200 flash monitor
+ 
+ idf.py -p COM22 -b 115200 flash
+ 
+ idf.py -p COM22 monitor
+ 
+idf.py -p COM3 -b 115200 flash
 
-       :: Serial flasher config → Default serial port → COM21
-idf.py build
-idf.py flash monitor     :: portot nem kell megadni, ha beállított
-
-idf.py -p COM22 -b 115200 flash monitor
-
-idf.py -p COM22 -b 115200 flash
-
-idf.py -p COM22 monitor
 
 idf.py -p COM3 -b 115200 flash
+# --- Forráskód csomag készítése ---
+# A tools/export_head.sh script diff nélkül készít átvihető csomagot a legfrissebb kódról.
+# Tar.gz alapból:      bash tools/export_head.sh
+# Zip formátumhoz:     bash tools/export_head.sh --zip
+# Saját névvel:        bash tools/export_head.sh --zip --output /path/esp32.zip
+# A létrejött fájlt másold át az ESP-IDF gépre, majd csomagold ki (tar -xf vagy unzip).
