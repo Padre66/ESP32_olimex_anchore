@@ -23,7 +23,7 @@
   .pill{display:inline-block;padding:2px 7px;border-radius:999px;font-size:11px}
   .ok{background:rgba(25,195,125,.2);color:#9ce7c9}
   .err{background:rgba(255,93,93,.18);color:#ffc3c3}
-  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;font-size:12px}
+  .mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
   .muted{color:var(--muted)}
   .inp{width:100%;padding:8px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.12);background:var(--panel2);color:var(--txt)}
   #log{white-space:pre-wrap;max-height:40vh;overflow:auto}
@@ -80,15 +80,15 @@
 
 <script>
 /* ===== util ===== */
-function $(id){ return document.getElementById(id); }
-function qs(sel){ return document.querySelector(sel); }          /* ÚJ: bármilyen szelektorhoz */
+const $ = id => document.getElementById(id);
+const qs = s => document.querySelector(s);
 function logln(s){ const L=$('log'); if(!L){console.warn(s);return;} L.textContent+=s+'\n'; L.scrollTop=L.scrollHeight; console.log(s); }
 function setPill(ok,txt){ const p=$('statusPill'); if(!p) return; p.textContent=txt||(ok?'Csatlakozva':'Nincs kapcsolat'); p.className='pill '+(ok?'ok':'err'); }
 
-/* ===== UUID getters ===== */
+/* ===== UUID ===== */
 const UUID={ svc:()=>$('svcUuid').value.trim().toLowerCase(), cfg:()=>$('cfgUuid').value.trim().toLowerCase(), data:()=>$('dataUuid').value.trim().toLowerCase() };
 
-/* ===== TLV map ===== */
+/* ===== TLV ===== */
 const T={VER:0x00,STATUS:0x01,UPTIME_MS:0x02,SYNC_MS:0x03,
   NETWORK_ID:0x10,ZONE_ID:0x11,ANCHOR_ID:0x12,TX_ANT_DLY:0x13,RX_ANT_DLY:0x14,BIAS_TICKS:0x16,LOG_LEVEL:0x1F,HB_MS:0x20,
   SYN_PPM_MAX:0x30,SYN_JUMP_PPM:0x31,SYN_AB_GAP_MS:0x32,SYN_MS_EWMA_DEN:0x33,SYN_TK_EWMA_DEN:0x34,SYN_TK_MIN_MS:0x35,SYN_TK_MAX_MS:0x36,SYN_DTTX_MIN_MS:0x37,SYN_DTTX_MAX_MS:0x38,SYN_LOCK_NEED:0x39,
@@ -105,9 +105,8 @@ const EDIT_FIELDS=[
   ['TX_ANT_DLY',T.TX_ANT_DLY],['RX_ANT_DLY',T.RX_ANT_DLY],['BIAS_TICKS',T.BIAS_TICKS],
   ['PHY_CH',T.PHY_CH],['PHY_SFDTO',T.PHY_SFDTO]
 ];
-
 function renderEdit(){
-  const tb = qs('#tblEdit tbody');                  /* FIX: querySelector, nem getElementById */
+  const tb = qs('#tblEdit tbody');
   if(!tb){ logln('[UI] Hiba: #tblEdit tbody nem található'); return; }
   tb.innerHTML = EDIT_FIELDS.map(([label])=>{
     const esp=(g.esp&&g.esp[label]) ?? '-';
@@ -120,16 +119,13 @@ function renderEdit(){
 async function doEspGet(){
   logln('[ESP] lekérés indul');
   try{
-    let r = await fetch('/api/config',{cache:'no-store'});
-    if(!r.ok) r = await fetch('/api/esp_config',{cache:'no-store'});
+    let r=await fetch('/api/config',{cache:'no-store'});
+    if(!r.ok) r=await fetch('/api/esp_config',{cache:'no-store'});
     if(!r.ok) throw new Error('HTTP hiba, nincs válasz');
-    const j = await r.json();
-    g.esp = j;
-    renderEdit();
+    const j=await r.json();
+    g.esp=j; renderEdit();
     logln('[ESP] kész');
-  }catch(e){
-    logln('[ESP] hiba: '+e.message);
-  }
+  }catch(e){ logln('[ESP] hiba: '+e.message); }
 }
 
 /* ===== DWM BLE ===== */
@@ -163,18 +159,32 @@ function onCfgNotify(ev){
 async function connect(){
   try{
     if(!('bluetooth' in navigator)){ logln('[BLE] nem támogatott'); return; }
-    const device=await navigator.bluetooth.requestDevice({filters:[{services:[UUID.svc()]}],optionalServices:[UUID.svc()]});
+
+    const svc = UUID.svc();
+    // FONTOS: a Zephyr reklámban nincs service UUID → acceptAllDevices kell.
+    const device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: [svc],
+      filters: [{ namePrefix: 'UWB_' }, { namePrefix: 'UWB' }]  // nem kötelező, csak kényelmi
+    });
+
     g.dev=device; setPill(true,'Csatlakozás…');
-    const server=await device.gatt.connect();
-    const svc=await server.getPrimaryService(UUID.svc());
-    const cfg=await svc.getCharacteristic(UUID.cfg());
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(svc);
+    const cfg = await service.getCharacteristic(UUID.cfg());
+
+    // Ellenőrzés: van-e NOTIFY és WRITE?
+    const props = cfg.properties||{};
+    logln('[BLE] CFG props: notify='+(!!props.notify)+' write='+(!!props.write)+' writeNR='+(!!props.writeWithoutResponse));
+
     await cfg.startNotifications();
     cfg.addEventListener('characteristicvaluechanged', onCfgNotify);
-    g.server=server; g.svc=svc; g.cfg=cfg;
+
+    g.server=server; g.svc=service; g.cfg=cfg;
     setPill(true,'Csatlakozva');
     $('btnDwmGet').disabled=false;
     $('btnApply').disabled=false;
-    logln('[BLE] csatlakozva');
+    logln('[BLE] csatlakozva, noti indul');
   }catch(e){
     setPill(false,'Nincs kapcsolat'); logln('[BLE] hiba: '+e);
   }
@@ -182,16 +192,24 @@ async function connect(){
 
 function buildGet(){
   const req = Number($('reqId').value)||1;
-  return new Uint8Array([1,0x02,(req>>8)&255,req&255,0]);  /* ver=1, cmd=GET */
+  // ver=1, cmd=0x02 GET, req_id big-endian, n_tlv=0
+  return new Uint8Array([1,0x02,(req>>8)&255,req&255,0]);
 }
 
 async function doDwmGet(){
-  if(!g.cfg){ logln('[DWM] GET kihagyva: nincs kapcsolat'); return; }
+  if(!g.cfg){ logln('[DWM] GET: nincs kapcsolat'); return; }
   try{
-    logln('[DWM] GET küldés');
+    logln('[DWM] GET küldés (WRITE_NR)');
     await g.cfg.writeValueWithoutResponse(buildGet());
-  }catch(e){
-    logln('[DWM] GET hiba: '+e);
+    // fallback ha a böngésző tiltja a NR írást
+  }catch(e1){
+    logln('[DWM] WRITE_NR hiba, próbálom WRITE-tal: '+e1);
+    try{
+      await g.cfg.writeValueWithResponse(buildGet());
+      logln('[DWM] GET küldés (WRITE) ok');
+    }catch(e2){
+      logln('[DWM] GET sikertelen: '+e2);
+    }
   }
 }
 
@@ -216,12 +234,13 @@ function buildSetTLV(inp){
   if(inp.ZONE_ID){ const v=hexToU16(inp.ZONE_ID); pushTLV(tlv,T.ZONE_ID,be16(v)); }
   if(inp.ANCHOR_ID){ const v=hexToU32(inp.ANCHOR_ID); pushTLV(tlv,T.ANCHOR_ID,be32(v)); }
   if(inp.HB_MS) pushTLV(tlv,T.HB_MS,be16(Math.max(200,num(inp.HB_MS)&0xffff)));
-  if(inp.LOG_LEVEL) pushTLV(tlv,T.LOG_LEVEL,new Uint8Array([num(inp.LOG_LEVEL)&0xff]));
-  if(inp.TX_ANT_DLY) pushTLV(tlv,T.TX_ANT_DLY,be32(num(inp.TX_ANT_DLY)|0));
-  if(inp.RX_ANT_DLY) pushTLV(tlv,T.RX_ANT_DLY,be32(num(inp.RX_ANT_DLY)|0));
-  if(inp.BIAS_TICKS) pushTLV(tlv,T.BIAS_TICKS,be32(num(inp.BIAS_TICKS)|0));
+  if(inp.LOG_LEVEL) pushTLV(tlv,T_LOG_LEVEL,new Uint8Array([num(inp.LOG_LEVEL)&0xff]));
+  if(inp.TX_ANT_DLY) pushTLV(tlv,T_TX_ANT_DLY,be32(num(inp.TX_ANT_DLY)|0));
+  if(inp.RX_ANT_DLY) pushTLV(tlv,T_RX_ANT_DLY,be32(num(inp.RX_ANT_DLY)|0));
+  if(inp.BIAS_TICKS) pushTLV(tlv,T_BIAS_TICKS,be32(num(inp.BIAS_TICKS)|0));
   if(inp.PHY_CH) pushTLV(tlv,T.PHY_CH,new Uint8Array([num(inp.PHY_CH)&0xff]));
   if(inp.PHY_SFDTO) pushTLV(tlv,T.PHY_SFDTO,be16(num(inp.PHY_SFDTO)&0xffff));
+
   const req=(Number($('reqId').value)||1)+1; $('reqId').value=String(req);
   const hdr=new Uint8Array([1,0x01,(req>>8)&255,req&255,0]); /* ver=1, cmd=SET */
   return new Uint8Array([...hdr,...tlv]);
@@ -235,24 +254,24 @@ async function doSetBoth(){
     let r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(inp)});
     if(!r.ok) r=await fetch('/api/esp_config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(inp)});
     logln('[ESP] SET elküldve');
-  }catch(e){
-    logln('[ESP] SET hiba: '+e.message);
-  }
+  }catch(e){ logln('[ESP] SET hiba: '+e.message); }
 
   try{
-    if(g.cfg){
-      const pkt=buildSetTLV(inp);
+    if(!g.cfg){ logln('[DWM] SET kihagyva: nincs kapcsolat'); return; }
+    const pkt=buildSetTLV(inp);
+    // elsődlegesen WRITE (válaszos), ha kell NR-re vált
+    try{
       await g.cfg.writeValueWithResponse(pkt);
-      logln('[DWM] SET elküldve');
-    }else{
-      logln('[DWM] SET kihagyva: nincs kapcsolat');
+      logln('[DWM] SET elküldve (WRITE)');
+    }catch(e1){
+      logln('[DWM] WRITE hiba, próbálom WRITE_NR: '+e1);
+      await g.cfg.writeValueWithoutResponse(pkt);
+      logln('[DWM] SET elküldve (WRITE_NR)');
     }
-  }catch(e){
-    logln('[DWM] SET hiba: '+e);
-  }
+  }catch(e){ logln('[DWM] SET hiba: '+e); }
 }
 
-/* ===== Web Serial: soros napló olvasása ===== */
+/* ===== Web Serial ===== */
 let serialReader=null;
 async function openSerial(){
   if(!('serial' in navigator)){ alert('A böngésző nem támogatja a Web Serial API-t'); return; }
@@ -279,7 +298,7 @@ $('btnEspGet').addEventListener('click', doEspGet);
 $('btnApply').addEventListener('click', doSetBoth);
 $('btnOpenSerial').addEventListener('click', openSerial);
 
-renderEdit();   /* DOM kész, mert a script a body végén van */
+renderEdit();
 </script>
 </body>
 </html>
