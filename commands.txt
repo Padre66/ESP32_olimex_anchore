@@ -19,11 +19,3 @@ index bee439e0a95c5fe6ccdc5905bd0472c86f819414..ce73f427218bfa8d0785e64144ca17d6
  
 idf.py -p COM3 -b 115200 flash
 
-
-idf.py -p COM3 -b 115200 flash
-# --- Forráskód csomag készítése ---
-# A tools/export_head.sh script diff nélkül készít átvihető csomagot a legfrissebb kódról.
-# Tar.gz alapból:      bash tools/export_head.sh
-# Zip formátumhoz:     bash tools/export_head.sh --zip
-# Saját névvel:        bash tools/export_head.sh --zip --output /path/esp32.zip
-# A létrejött fájlt másold át az ESP-IDF gépre, majd csomagold ki (tar -xf vagy unzip).
