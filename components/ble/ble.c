@@ -38,6 +38,24 @@ static bool g_connecting = false;
  *
  * IDF belső (LSB) sorrend + védelemként BE sorrend is elfogadva.
  */
+
+/* ---- SCAN állapot ---- */
+static bool s_params_set = false, s_scan_active = false;
+static bool s_scan_pending = false;   /* ÚJ: start kérve, START_COMPLETE-re várunk */
+
+static esp_ble_scan_params_t s_scan_params = {
+    .scan_type              = BLE_SCAN_TYPE_ACTIVE,
+    .own_addr_type          = BLE_ADDR_TYPE_PUBLIC,
+    .scan_filter_policy     = BLE_SCAN_FILTER_ALLOW_ALL,
+    .scan_interval          = 0x50,
+    .scan_window            = 0x30,
+    .scan_duplicate         = BLE_SCAN_DUPLICATE_DISABLE
+};
+
+/* ---- SCAN/CONNECT sorosítás + védett hívások (elődeklaráció) ---- */
+static esp_err_t start_scan_safe(uint32_t dur_sec);
+static esp_err_t gattc_open_safe(esp_gatt_if_t ifx, const esp_bd_addr_t addr, esp_ble_addr_type_t type);
+
 static const uint8_t UWB_SVC_UUID_128[16]  = { 0xAB,0x90,0x78,0x56,0x34,0x12,0x34,0x12,0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12 };
 static const uint8_t UWB_SVC_UUID_128_BE[16]= { 0x12,0x34,0x56,0x78,0x12,0x34,0x56,0x78,0x12,0x34,0x12,0x34,0x56,0x78,0x90,0xAB };
 static const uint8_t UWB_DATA_UUID_128[16] = { 0xAB,0x90,0x78,0x56,0x34,0x12,0x34,0x12,0x78,0x56,0x34,0x12,0x01,0xEF,0xCD,0xAB };
@@ -45,6 +63,49 @@ static const uint8_t UWB_CFG_UUID_128[16]  = { 0xAB,0x90,0x78,0x56,0x34,0x12,0x3
 
 static esp_bt_uuid_t uuid16(uint16_t u){ esp_bt_uuid_t x={.len=ESP_UUID_LEN_16,.uuid.uuid16=u}; return x; }
 static esp_bt_uuid_t uuid128(const uint8_t u[16]){ esp_bt_uuid_t x={.len=ESP_UUID_LEN_128}; memcpy(x.uuid.uuid128,u,16); return x; }
+
+// ---- SCAN/CONNECT sorosítás + védett hívások ----
+static esp_err_t start_scan_safe(uint32_t dur_sec);
+static esp_err_t gattc_open_safe(esp_gatt_if_t ifx, const esp_bd_addr_t addr, esp_ble_addr_type_t type);
+
+static esp_err_t start_scan_safe(uint32_t dur_sec)
+{
+    if (g_connecting) return ESP_ERR_INVALID_STATE;
+
+    if (!s_params_set) {
+        /* Paramok még nincsenek beállítva → most kérjük be.
+           A START a SET_COMPLETE eseményben történik. */
+        return esp_ble_gap_set_scan_params(&s_scan_params);
+    }
+
+    /* Már fut vagy épp indul → ne indítsuk újra. */
+    if (s_scan_active || s_scan_pending) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    /* Ha biztosan fut, állítsuk meg, majd indulunk. */
+    if (s_scan_active) {
+        esp_ble_gap_stop_scanning();
+        /* STOP_COMPLETE-ben s_scan_active = false lesz. Várakozás nem kell. */
+    }
+
+    esp_err_t er = esp_ble_gap_start_scanning(dur_sec);
+    if (er == ESP_OK) {
+        s_scan_pending = true;   /* START kérve, még nem aktív */
+    }
+    return er;
+}
+
+static esp_err_t gattc_open_safe(esp_gatt_if_t ifx, const esp_bd_addr_t addr, esp_ble_addr_type_t type)
+{
+    if (s_scan_active) esp_ble_gap_stop_scanning();
+    if (g_connecting)  return ESP_ERR_INVALID_STATE;
+    g_connecting = true;
+    esp_err_t er = esp_ble_gattc_open(ifx, (uint8_t*)addr, type, true);
+    if (er != ESP_OK) g_connecting = false;   /* ha azonnal hibázik, engedjük újrapróbálni */
+    return er;
+}
+
 /* publikus cb-regisztráció */
 void ble_register_notify_cb(ble_notify_cb_t cb){ g_cb = cb; }
 
@@ -66,26 +127,9 @@ static void reset_gatt_state(void){
 /* ====== GAP ====== */
 static void gap_cb(esp_gap_ble_cb_event_t e, esp_ble_gap_cb_param_t* p);
 
-static esp_ble_scan_params_t s_scan_params = {
-    .scan_type              = BLE_SCAN_TYPE_ACTIVE,
-    .own_addr_type          = BLE_ADDR_TYPE_PUBLIC,
-    .scan_filter_policy     = BLE_SCAN_FILTER_ALLOW_ALL,
-    .scan_interval          = 0x50,
-    .scan_window            = 0x30,
-    .scan_duplicate         = BLE_SCAN_DUPLICATE_DISABLE
-};
-
-static bool s_params_set=false, s_scan_active=false;
-
 static void start_scan(void){
-    if (!s_params_set){
-        esp_err_t er = esp_ble_gap_set_scan_params(&s_scan_params);
-        ESP_LOGI(TAG, "scan_params rc=0x%x", er);
-    } else {
-        if (s_scan_active){ ESP_LOGI(TAG,"scan already active"); return; }
-        esp_err_t er = esp_ble_gap_start_scanning(0);
-        ESP_LOGI(TAG, "scan start rc=0x%x", er);
-    }
+    esp_err_t er = start_scan_safe(0);
+    ESP_LOGI(TAG, "scan start (safe) rc=0x%x", er);
 }
 
 /* ====== GATTC ====== */
@@ -129,30 +173,35 @@ static void gap_cb(esp_gap_ble_cb_event_t e, esp_ble_gap_cb_param_t* p)
 {
     switch (e) {
     case ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT:
-        s_params_set = true;
-        esp_ble_gap_start_scanning(0);
+        s_params_set = (p->scan_param_cmpl.status == ESP_BT_STATUS_SUCCESS);
+        if (s_params_set) start_scan_safe(0);
         break;
 
     case ESP_GAP_BLE_SCAN_START_COMPLETE_EVT:
-        s_scan_active = (p->scan_start_cmpl.status == ESP_BT_STATUS_SUCCESS);
+        if (p->scan_start_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+            s_scan_active  = true;
+        } else {
+            s_scan_active  = false;
+        }
+        s_scan_pending = false;   /* start kísérlet lezárult */
+        ESP_LOGI(TAG, "scan start complete, status=0x%x", p->scan_start_cmpl.status);
         break;
 
     case ESP_GAP_BLE_SCAN_RESULT_EVT: {
         const esp_ble_gap_cb_param_t* sr = p;
         if (sr->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT) {
             if (!g_connecting && adv_name_match(sr->scan_rst.ble_adv, sr->scan_rst.adv_data_len, g_name_filter)) {
-                g_connecting = true;
                 memcpy(g_peer_bda, p->scan_rst.bda, 6);
                 g_peer_addr_type = p->scan_rst.ble_addr_type;
-                if (s_scan_active) esp_ble_gap_stop_scanning();
-                esp_ble_gattc_open(g_gattc_if, g_peer_bda, g_peer_addr_type, true);
+                gattc_open_safe(g_gattc_if, g_peer_bda, g_peer_addr_type);
             }
         }
         break;
     }
 
     case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT:
-        s_scan_active = false;
+        s_scan_active  = false;
+        s_scan_pending = false;   /* biztosan nincs folyamatban indítás */
         break;
 
     default:
@@ -182,6 +231,7 @@ static void gattc_cb(esp_gattc_cb_event_t e, esp_gatt_if_t gattc_if, esp_ble_gat
     switch (e) {
     case ESP_GATTC_OPEN_EVT:
         if (p->open.status == ESP_GATT_OK) {
+            g_connecting = false;
             g_conn_id = p->open.conn_id;
             g_connected = true;
             reset_gatt_state();
@@ -191,8 +241,9 @@ static void gattc_cb(esp_gattc_cb_event_t e, esp_gatt_if_t gattc_if, esp_ble_gat
             esp_ble_gattc_search_service(g_gattc_if, g_conn_id, NULL);
         } else {
             ESP_LOGW(TAG, "open failed 0x%x; restart scan", p->open.status);
-            g_connecting=false;
-            start_scan();
+            g_connecting = false;
+            vTaskDelay(pdMS_TO_TICKS(200));
+            start_scan_safe(0);
         }
         break;
 
@@ -310,8 +361,11 @@ static void gattc_cb(esp_gattc_cb_event_t e, esp_gatt_if_t gattc_if, esp_ble_gat
     case ESP_GATTC_CLOSE_EVT:
     case ESP_GATTC_DISCONNECT_EVT:
         ESP_LOGW(TAG, "disconnected; reason=0x%x", p->disconnect.reason);
-        g_connected=false; g_connecting=false; reset_gatt_state();
-        start_scan();
+        g_connected = false;
+        g_connecting = false;
+        reset_gatt_state();
+        vTaskDelay(pdMS_TO_TICKS(100));
+        start_scan_safe(0);
         break;
 
     default:
